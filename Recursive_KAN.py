@@ -8,7 +8,7 @@ class KAN_RNN_Layer(nn.Module):
     """
         Defines KAN with univariate approximation via GRUs
     """
-    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi'):
+    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi', thres = 0.):
         """ 
         in_dim:Dimension of Agent information, i.e cartesian coordinates R^2
         """
@@ -24,13 +24,15 @@ class KAN_RNN_Layer(nn.Module):
         #Network Attributes
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #### Set device!
         self.network_type = network_type
-        self.L = [1. for _ in range(in_dim)] ## for projecting into bounds if Agent tries to leave rect
         self.Network_stack = nn.ModuleList() ## Read linear_Network_stack["to Neuron"]["from Neuron"]
         self.linear_Network_stack = nn.ModuleList()
         self.activation = nn.ReLU()
         self.num_forward_steps = n_timesteps
         self.u_max = u_max
 
+        # Constraint
+        self.thres = thres
+        self.L = [1. for _ in range(in_dim)] ## for projecting into bounds if Agent tries to leave rect #TODO write general
         #init model
         self.init_model()
 
@@ -95,18 +97,17 @@ class KAN_RNN_Layer(nn.Module):
                 outs[:,i,l] = out.squeeze()
         return outs
 
-    def system_dynamics_multi(self,u, x_prev, train = False):
+    def system_dynamics_multi(self,u, x_prev):
         """
             When Networktype is multi
             x_prev = [Batch_size, N_Agents, in_dim]
         """
         x_new = torch.zeros_like(x_prev)
-        thres = 0
         for i in range(self.in_dim):
             x_state = (x_prev + self.sys_param_lam * u)[:,:,i]
             x_new[:,:,i] = torch.clamp(x_state, min = 0, max = self.L[i])
             if self.training:
-                self.penalty += torch.sum((torch.relu(-x_state - thres))**2) + torch.sum((torch.relu(x_state - self.L[i] - thres))**2)
+                self.penalty += torch.sum((torch.relu(-x_state - self.thres))**2) + torch.sum((torch.relu(x_state - self.L[i] - self.thres))**2)
         return x_new
     
     def forward_multi(self, x):
@@ -153,12 +154,11 @@ class KAN_RNN_Layer(nn.Module):
             x_prev = [Batch_size, N_Agents, in_dim]
         """
         x_new = torch.zeros_like(x_prev)
-        thres = 0
         for i in range(self.in_dim):
             x_state = (x_prev + self.sys_param_lam * u)[:,:,i]
             x_new[:,:,i] = torch.clamp(x_state, min = 0, max = self.L[i])
             if self.training:
-                self.penalty += torch.sum((torch.relu(-x_state - thres))**2) + torch.sum((torch.relu(x_state - self.L[i] - thres))**2)
+                self.penalty += torch.sum((torch.relu(-x_state - self.thres))**2) + torch.sum((torch.relu(x_state - self.L[i] - self.thres))**2)
         return x_new
     
     def forward_uni(self, x):

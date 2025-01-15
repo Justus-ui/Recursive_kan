@@ -1,22 +1,52 @@
 from itertools import product
 
 import numpy as np
-from scipy.integrate import nquad
+import matplotlib.pyplot as plt
 
 import torch
 from torch import nn
 
+### draw_samples from pdf
+def rejection_sampling(pdf, in_dim, n_samples, x_range, max_pdf_value=1.0):
+    """
+    Rejection sampling to draw samples from a given PDF.
+    
+    Parameters:
+    - pdf: The custom PDF function.
+    - n_samples: Number of samples to generate.
+    - x_range: Range of x values to sample from.
+    - max_pdf_value: The maximum value of the PDF to normalize the proposal distribution.
+    
+    Returns:
+    - samples: List of samples drawn from the PDF.
+    """
+    samples = []
+    while len(samples) < n_samples:
+        # Generate random candidate sample from the proposal distribution (uniform)
+        x_candidate = np.random.uniform(*x_range, size = in_dim)
+        y_candidate = np.random.uniform(0, max_pdf_value)
+        
+        # Accept the sample with probability proportional to the PDF value
+        if y_candidate < pdf(x_candidate):
+            samples.append(x_candidate)
+    return torch.tensor(np.array(samples))
+
+
+
 class Ergodicity_Loss(nn.Module):
-    def __init__(self, N_Agents, n_timesteps,L = None, in_dim = None, k_max = 10, control_energy_reg = 1e-3, device = torch.device('cpu'), density = 'uniform', **kwargs):
+    def __init__(self, N_Agents, n_timesteps,L = None, in_dim = None, k_max = 10, control_energy_reg = 1e-3, device = torch.device('cpu'), density = 'uniform', verbose = True, **kwargs):
         super(Ergodicity_Loss, self).__init__()
         self.device = device
+        self.verbose = verbose
         #self.device = torch.device("cpu")
         self.N_Agents = N_Agents
         self.n_timesteps = n_timesteps
         if L is None:
             self.L = torch.tensor([1. for _ in range(in_dim)])
+            self.in_dim = in_dim
         else:
             self.L = L
+            self.in_dim = len(L)
         self.k_max = k_max
 
         coeff_shape = [self.k_max for _ in range(len(self.L))]
@@ -38,17 +68,43 @@ class Ergodicity_Loss(nn.Module):
             pass
         init_params_densities = {
             'uniform': noop,
-            'mixture_uniform': self.init_mixture_uniform
+            'mixture_uniform': self.init_mixture_uniform,
+            'custom': self.init_custom_pdf
         }
         self.init_mydensity = init_params_densities.get(self.density, self.type_error)
 
         self.init = init_params_densities.get(self.density, self.type_error)
         cf_densities = {
             'uniform': self.charcteristic_function_uniform,
-            'mixture_uniform': self.characteristic_function_mixture_uniform
+            'mixture_uniform': self.characteristic_function_mixture_uniform,
+            'custom': self.sampled_fourier
         }
         self.charcteristic_function = cf_densities.get(self.density, self.type_error)
-    
+
+    def init_custom_pdf(self, kwargs):
+        self.pdf = kwargs['pdf']
+                # Parameters
+        self.n_samples = kwargs['num_samples']
+        if len(self.L) > 1:
+            raise NotImplementedError("sampling not yet defined for multivariate pdfs")
+        x_range = (0, self.L[0])  # We sample over the range [-5, 5]
+        max_pdf_value = 5 / 3  # The max value of our custom PDF (we can adjust this for scaling)
+
+        # Generate samples using rejection sampling
+        samples = rejection_sampling(self.pdf, self.in_dim, self.n_samples, x_range, max_pdf_value)
+
+        # Plot the result
+        x_vals = np.linspace(x_range[0], x_range[1], 1000)
+        y_vals = self.pdf(x_vals)
+        print(samples.shape)
+        if self.verbose:
+            plt.hist(samples.squeeze(), bins=30, density=True, alpha=0.6, label='Rejection Sampling', color='blue')
+            plt.plot(x_vals, y_vals, label='True PDF', color='red')
+            plt.legend()
+            plt.title("Rejection Sampling from a Custom PDF")
+            plt.show()
+        self.samples = samples
+
     def init_mixture_uniform(self, kwargs):
         self.regions = kwargs['regions']
         self.weights = kwargs['weights']
@@ -64,6 +120,19 @@ class Ergodicity_Loss(nn.Module):
             else:
                 normal *= (self.L[i] / 2)**0.5
         return normal
+
+    def sampled_fourier(self, k):
+        """
+            Takes samples from pdf and estimates real part of characteristic function
+            samples = [num sample, dim], (dim of our Random Vector)
+        """
+
+        return torch.cos(self.samples * k).prod(dim = 1).sum() / self.n_samples
+
+
+
+
+
 
     def compute_weight_norm(self, k):
         """ compute Lambda_k """
@@ -191,4 +260,13 @@ if __name__ == '__main__':
     end_time = time.time()
     forward_time = end_time - intermed_time
     print("forward_time:", forward_time)
+    def custom_pdf(x):
+        """
+         Define a custom probability density function (PDF).
+        """
+        return np.where(((x > 0) & (x < 0.3)) | ((x > 0.6) & (x < 0.9)), 5 / 3, 0)
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 64, device = device, density = 'custom', pdf = custom_pdf, num_samples = 100000)
+    print(Loss.coeffs_density)
+    print(torch.fft.fft(torch.tensor(custom_pdf(Loss.samples))))
+
 
