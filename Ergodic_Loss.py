@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 ### draw_samples from pdf
-def rejection_sampling(pdf, in_dim, n_samples, x_range, max_pdf_value=1.0):
+def rejection_sampling(pdf, in_dim, n_samples, L, max_pdf_value=1.0):
     """
     Rejection sampling to draw samples from a given PDF.
     
@@ -23,7 +23,7 @@ def rejection_sampling(pdf, in_dim, n_samples, x_range, max_pdf_value=1.0):
     samples = []
     while len(samples) < n_samples:
         # Generate random candidate sample from the proposal distribution (uniform)
-        x_candidate = np.random.uniform(*x_range, size = in_dim)
+        x_candidate = np.array([np.random.uniform(0, upper, size=(1)) for upper in L]).T
         y_candidate = np.random.uniform(0, max_pdf_value)
         
         # Accept the sample with probability proportional to the PDF value
@@ -31,7 +31,34 @@ def rejection_sampling(pdf, in_dim, n_samples, x_range, max_pdf_value=1.0):
             samples.append(x_candidate)
     return torch.tensor(np.array(samples))
 
-
+def differentiable_sampling(pdf, n_samples, x_range = (1e-2,1 - 1e-2), max_pdf = 11):
+    # Assuming the pdf is normalized so that it integrates to 1 over the range
+    samples = []
+    gen_samples = 0
+    while gen_samples < n_samples:
+        # Sample x_candidate from the range
+        x_candidate = torch.rand(1) * (x_range[1] - x_range[0]) + x_range[0]
+        
+        # Sample y_candidate from a uniform distribution between 0 and 1
+        y_candidate = torch.rand(1) * max_pdf
+        
+        # Compute the probability of acceptance as a soft threshold
+        acceptance_probability = torch.sigmoid(pdf(x_candidate) - y_candidate)  # smooth function to decide acceptance
+        try:
+            accept = torch.bernoulli(acceptance_probability)
+        except:
+            #print(x_candidate)
+            ## sometimes pdf generates division by 0 error --> nan
+            continue
+        
+        # Only append x_candidate if accepted, but using a differentiable approximation
+        if accept.item(): 
+            sample = x_candidate * accept
+            #print(accept, x_candidate)
+            samples.append(sample)
+            gen_samples += 1
+    
+    return torch.cat(samples)
 
 class Ergodicity_Loss(nn.Module):
     def __init__(self, N_Agents, n_timesteps,L = None, in_dim = None, k_max = 10, control_energy_reg = 1e-3, device = torch.device('cpu'), density = 'uniform', verbose = True, **kwargs):
@@ -57,13 +84,18 @@ class Ergodicity_Loss(nn.Module):
         self.normalization_factors = torch.zeros(coeff_shape, device = self.device) # h_k
         self.norm_weights = torch.zeros(coeff_shape, device = self.device) # Lambda_k
         self.compute_fourier_coefficients_density()
+        print(self.coeffs_density, "target distribution")
 
         self.control_energy_reg = control_energy_reg
+        self.criterion = torch.nn.SmoothL1Loss(beta = 1e-3)
 
     def type_error(self):
         raise TypeError('Unknow density')
 
     def init_densities(self):
+        """
+            Initalizes densities
+        """
         def noop(*args, **kwargs):
             pass
         init_params_densities = {
@@ -85,23 +117,22 @@ class Ergodicity_Loss(nn.Module):
         self.pdf = kwargs['pdf']
                 # Parameters
         self.n_samples = kwargs['num_samples']
-        if len(self.L) > 1:
-            raise NotImplementedError("sampling not yet defined for multivariate pdfs")
-        x_range = (0, self.L[0])  # We sample over the range [-5, 5]
-        max_pdf_value = 5 / 3  # The max value of our custom PDF (we can adjust this for scaling)
+        max_pdf_value = kwargs['max_pdf']
 
         # Generate samples using rejection sampling
-        samples = rejection_sampling(self.pdf, self.in_dim, self.n_samples, x_range, max_pdf_value)
-
-        # Plot the result
-        x_vals = np.linspace(x_range[0], x_range[1], 1000)
-        y_vals = self.pdf(x_vals)
-        print(samples.shape)
-        if self.verbose:
-            plt.hist(samples.squeeze(), bins=30, density=True, alpha=0.6, label='Rejection Sampling', color='blue')
-            plt.plot(x_vals, y_vals, label='True PDF', color='red')
+        samples = rejection_sampling(self.pdf, self.in_dim, self.n_samples, self.L, max_pdf_value)
+        samples = samples.squeeze()
+        if len(samples.shape) == 1:
+            samples = samples.unsqueeze(1)
+        
+        if self.in_dim == 2 and self.verbose:
+            # Plotting the samples and the true PDF (in 2D)
+            Z = self.pdf(samples.numpy())
+            print(Z.shape)
+            plt.scatter(samples[:, 0], samples[:, 1], c=Z, cmap="viridis")
+            plt.colorbar(label="Function Value")
             plt.legend()
-            plt.title("Rejection Sampling from a Custom PDF")
+            plt.title("Rejection Sampling from a Custom PDF (2D)")
             plt.show()
         self.samples = samples
 
@@ -158,8 +189,41 @@ class Ergodicity_Loss(nn.Module):
         """
         # For now i just put as calculaated t 1s
         transform = self.fourier_basis(x,sets)
-        c_k = transform.sum(dim=-3).sum(dim=-1)
-        return c_k / (self.N_Agents * self.n_timesteps)
+        c_k = transform.sum(dim=0).sum(dim=-1)
+        return c_k / (self.N_Agents * self.n_timesteps) ##TODO add functionality to not use [0,1] as timeframe, i.e * t
+    
+    def C_t(self, x):
+        """
+            C_t in one dimension 
+            TODO VECTTORIZE
+        """
+
+        eps = 1e-6 ## TODO
+        arr = self.Curr_sample - x
+        normalized = arr / (arr.abs())
+        diff = torch.diff(normalized, dim = 0)
+        return diff.abs().sum(dim=(0,2)) / 2 
+
+    def compute_C_t_fft(self, X):
+        """
+            C_t in one dimension 
+            TODO VECTTORIZE
+            X State of Agents [Num_timesteps ,Batch_size, N_Agents, in_dim] 
+        """
+        n_samples = 1000 
+        coeff_shape = [X.shape[1]] + [self.k_max for _ in range(len(self.L))]
+        coeffs_density = torch.zeros(coeff_shape)
+        #print(coeffs_density.shape)
+        k = list(range(self.k_max))
+        for i in range(X.shape[1]):
+            self.Curr_sample = X[:,i,:,:].unsqueeze(1)
+            samples = differentiable_sampling(self.C_t, n_samples)
+            for sets in product(k, repeat = len(self.L)):
+                k_trans = torch.tensor(sets, dtype = torch.float32)
+                k_trans *= torch.pi * (self.L)**(-1)
+                coeffs_density[i,*sets] = (torch.cos(samples * k_trans).prod(dim = 1).sum() / n_samples) / self.normalization_factors[sets]
+        return coeffs_density
+
 
     def charcteristic_function_uniform(self, k):
         """ 
@@ -218,15 +282,26 @@ class Ergodicity_Loss(nn.Module):
         """
         Batch_size = x.shape[1]
         coeffs = torch.zeros(([Batch_size] + [self.k_max for _ in range(len(self.L))]), device = self.device)
-        k = list(range(self.k_max))
-        for sets in product(k, repeat = len(self.L)):
-            slices = [slice(None)] + list(sets)
-            coeffs[slices] = self.compute_fourier_coefficients_agents_at_time_t(x,sets)
+        if len(self.L) > 1:
+            raise NotImplementedError('Only one dimension available so far...')
+        coeffs = self.compute_C_t_fft(x)
+        #k = list(range(self.k_max))
+        #for sets in product(k, repeat = len(self.L)):
+        #    slices = [slice(None)] + list(sets)
+        #    coeffs[slices] = self.compute_fourier_coefficients_agents_at_time_t(x,sets)
         
-        loss = (((coeffs - self.coeffs_density)**2) * self.norm_weights).sum()
+        #loss_2 = (((coeffs - self.coeffs_density)**2) * self.norm_weights).sum()
+        #loss_1 = (((coeffs - self.coeffs_density).abs()) * self.norm_weights).sum()
+        #loss = lam2 * loss_2 + lam1 * loss_1
+        repeated_coeffs = self.coeffs_density.unsqueeze(0).repeat(Batch_size, *[1 for _ in self.L]) ##repeat target coeffs Batch_size times
+        loss = self.criterion(coeffs, repeated_coeffs)
+        if self.verbose:
+            print("model", coeffs,"target", self.coeffs_density)
+            print("scaling", self.norm_weights)
         if u is not None:
             loss += (self.control_energy_reg * (u.abs() ** 2).sum()) / (2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
         return  loss## I am really unhappy with the expand here!
+
 
 if __name__ == '__main__':
     import time
@@ -238,8 +313,9 @@ if __name__ == '__main__':
     #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device("cpu")
     X = torch.randn([num_timesteps,batch_size,N_Agents,in_dim], requires_grad = True, device = device)
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 64, device = device, density = 'uniform')
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 4, device = device, density = 'uniform')
     print(Loss.coeffs_density)
+    print(Loss.coeffs_density.shape)
     intermed_time = time.time()
     print("init time:", intermed_time- start_time)
     print(Loss(X))
@@ -252,21 +328,25 @@ if __name__ == '__main__':
             torch.tensor([[.6, .9]])
             ]
     weights = [.5, .5]
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 64, device = device, density = 'mixture_uniform', regions = regions, weights = weights)
-    print(Loss.coeffs_density)
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 4, device = device, density = 'mixture_uniform', regions = regions, weights = weights)
+    print("uniform via cf", Loss.coeffs_density)
+    print(Loss.coeffs_density.shape)
     intermed_time = time.time()
     print("init time:", intermed_time- start_time)
     print(Loss(X))
     end_time = time.time()
     forward_time = end_time - intermed_time
     print("forward_time:", forward_time)
+    #from densities import uniform_rect_regions as pdf
+    #import functools
+    #region  = np.array([[[0, 0.3], [0, 0.3]],
+    #                    [[0.6, 0.9], [0.7, 0.9]]])
+    #custom_pdf = functools.partial(pdf, regions=regions)
     def custom_pdf(x):
-        """
-         Define a custom probability density function (PDF).
-        """
         return np.where(((x > 0) & (x < 0.3)) | ((x > 0.6) & (x < 0.9)), 5 / 3, 0)
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 64, device = device, density = 'custom', pdf = custom_pdf, num_samples = 100000)
-    print(Loss.coeffs_density)
-    print(torch.fft.fft(torch.tensor(custom_pdf(Loss.samples))))
+
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = 1, k_max = 12, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 100000)
+    print("sampled same distribution",Loss.coeffs_density)
+    print(Loss.normalization_factors, "normals")
 
 

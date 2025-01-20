@@ -22,8 +22,8 @@ class Lipschitz_GRU(nn.Module):
         out, self.hidden_state = self.gru(x, self.hidden_state)
         return out
     
-    def init_hidden(self, batch_size):
-        self.hidden_state = torch.zeros(self.depth, batch_size, self.hidden)
+    def init_hidden(self, batch_size, device):
+        self.hidden_state = torch.zeros(self.depth, batch_size, self.hidden).to(device)
     
     def compute_constraint_gradient(self):
         self.grads_norm_constraints = []

@@ -8,9 +8,10 @@ class KAN_RNN_Layer(nn.Module):
     """
         Defines KAN with univariate approximation via GRUs
     """
-    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi', thres = 0.):
+    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi', thres = 0., device = None):
         """ 
         in_dim:Dimension of Agent information, i.e cartesian coordinates R^2
+        device: if true uses cuda
         """
         super(KAN_RNN_Layer, self).__init__()
         # Problem Attributes
@@ -20,9 +21,12 @@ class KAN_RNN_Layer(nn.Module):
         self.hidden = hidden
         self.depth = depth
         self.sys_param_lam = sys_param_lam
-   
-        #Network Attributes
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #### Set device!
+        self.device_train = torch.device("cpu") ## if device marker is set --> cuda
+        if device:
+            assert torch.cuda.is_available()
+            self.device_train = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device_eval = torch.device("cpu")
+        self.device_eval = torch.device("cpu")
         self.network_type = network_type
         self.Network_stack = nn.ModuleList() ## Read linear_Network_stack["to Neuron"]["from Neuron"]
         self.linear_Network_stack = nn.ModuleList()
@@ -36,7 +40,21 @@ class KAN_RNN_Layer(nn.Module):
         #init model
         self.init_model()
 
+    def train(self, mode = True):
+        super(KAN_RNN_Layer, self).train(mode)
+        self.to_device()
 
+    def eval(self):
+        super(KAN_RNN_Layer, self).eval()
+        self.to_device()
+
+    def to_device(self):
+        """
+            Loads modules to device
+        """
+        device = self.device_train if self.training else self.device_eval
+        #print(f"loaded to device {device}")
+        self.to(device)
 
     def type_error(self):
         """
@@ -120,8 +138,9 @@ class KAN_RNN_Layer(nn.Module):
 
         """ 
         self.penalty = 0
-        outs = torch.zeros(self.num_forward_steps, *x.shape)
-        control_trajectory = torch.zeros(self.num_forward_steps, *x.shape) ## Assume u of same shape as x!
+        device = self.device_train if self.training else self.device_eval
+        outs = torch.zeros(self.num_forward_steps, *x.shape, device = device)
+        control_trajectory = torch.zeros(self.num_forward_steps, *x.shape, device = device) ## Assume u of same shape as x!
         for i in range(self.num_forward_steps):
             outs[i] = x
             u = self.time_step_multi(x)
@@ -170,9 +189,10 @@ class KAN_RNN_Layer(nn.Module):
         outs: State of Agents [Num_timesteps ,Batch_size, N_Agents, in_dim]  
 
         """ 
+        device = self.device_train if self.training else self.device_eval
+        outs = torch.zeros(self.num_forward_steps, *x.shape, device = device)
         self.penalty = 0
-        outs = torch.zeros(self.num_forward_steps, *x.shape)
-        control_trajectory = torch.zeros(self.num_forward_steps, *x.shape) ## Assume u of same shape as x!
+        control_trajectory = torch.zeros(self.num_forward_steps, *x.shape, device = device) ## Assume u of same shape as x!
         for i in range(self.num_forward_steps):
             outs[i] = x
             u = self.time_step_uni(x)
@@ -181,13 +201,16 @@ class KAN_RNN_Layer(nn.Module):
         return outs, control_trajectory
 
     def forward(self, x):
+        device = self.device_train if self.training else self.device_eval
+        x = x.to(device)
         return self.forward_action(x)
 
 
     def init_hidden(self, batch_size):
+        device = self.device_train if self.training else self.device_eval
         for lists in self.Network_stack:
             for gru in lists:
-                gru.init_hidden(batch_size)
+                gru.init_hidden(batch_size, device)
 
     def train_enforce_constraints(self):
         Lip_lin.train_enforce_constraints()
@@ -203,11 +226,19 @@ if __name__ == '__main__':
     control_energy_reg = 1e-6 ### regularization on maximum control energy
     k_max = 64
     x = torch.randn(batch_size, N_Agents, in_dim)
-    model = KAN_RNN_Layer(N_Agents = N_Agents, in_dim = in_dim, hidden = 256, depth = 2, n_timesteps = timesteps,sys_param_lam= lam, network_type = 'uni')
+    model = KAN_RNN_Layer(N_Agents = N_Agents, in_dim = in_dim, hidden = 256, depth = 2, n_timesteps = timesteps,sys_param_lam= lam, network_type = 'uni', device = 'cuda')
+    model.train()
     model.init_hidden(batch_size)
-    print(model(x)[0].shape, model(x)[1].shape)
+    print(model(x)[0].shape, model(x)[1].shape, model(x)[1].device)
+    model.eval()
+    model.init_hidden(batch_size)
+    print(model(x)[0].shape, model(x)[1].shape, model(x)[1].device)
 
-    model = KAN_RNN_Layer(N_Agents = N_Agents, in_dim = in_dim, hidden = 256, depth = 2, n_timesteps = timesteps,sys_param_lam= lam, network_type = 'multi')
+    model = KAN_RNN_Layer(N_Agents = N_Agents, in_dim = in_dim, hidden = 256, depth = 2, n_timesteps = timesteps,sys_param_lam= lam, network_type = 'multi', device = 'cuda')
+    model.train()
     model.init_hidden(batch_size)
-    print(model(x)[0].shape, model(x)[1].shape)
+    print(model(x)[0].shape, model(x)[1].shape, model(x)[1].device)
+    model.eval()
+    model.init_hidden(batch_size)
+    print(model(x)[0].shape, model(x)[1].shape, model(x)[1].device)
 
