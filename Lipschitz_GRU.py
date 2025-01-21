@@ -16,7 +16,7 @@ class Lipschitz_GRU(nn.Module):
         #self.activation = activation ##TODO when does this work and when not??
         self.activation = nn.ReLU()
         self.Norm_constraints = torch.rand(self.depth) * self.B
-        self.gru = nn.GRU(in_dim, self.hidden, num_layers = self.depth, batch_first=True)
+        self.gru = nn.GRU(in_dim, self.hidden, num_layers = self.depth, batch_first=True, dropout = 0.3)
         
     def forward(self, x):
         out, self.hidden_state = self.gru(x, self.hidden_state)

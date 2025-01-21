@@ -87,7 +87,8 @@ class Ergodicity_Loss(nn.Module):
         print(self.coeffs_density, "target distribution")
 
         self.control_energy_reg = control_energy_reg
-        self.criterion = torch.nn.SmoothL1Loss(beta = 1e-3)
+        #self.criterion = torch.nn.SmoothL1Loss(beta = 1e-3)
+        self.criterion = torch.nn.MSELoss()
 
     def type_error(self):
         raise TypeError('Unknow density')
@@ -272,7 +273,7 @@ class Ergodicity_Loss(nn.Module):
             k *= torch.pi * (self.L)**(-1)
             self.coeffs_density[sets] = self.charcteristic_function(k).real
             self.normalization_factors[sets] = self.compute_normalization_constant(sets)
-            self.norm_weights[sets] = self.compute_weight_norm(k)
+            self.norm_weights[sets] = self.compute_weight_norm(k) * 100
         self.coeffs_density /= self.normalization_factors
 
 
@@ -282,21 +283,22 @@ class Ergodicity_Loss(nn.Module):
         """
         Batch_size = x.shape[1]
         coeffs = torch.zeros(([Batch_size] + [self.k_max for _ in range(len(self.L))]), device = self.device)
-        if len(self.L) > 1:
-            raise NotImplementedError('Only one dimension available so far...')
-        coeffs = self.compute_C_t_fft(x)
-        #k = list(range(self.k_max))
-        #for sets in product(k, repeat = len(self.L)):
-        #    slices = [slice(None)] + list(sets)
-        #    coeffs[slices] = self.compute_fourier_coefficients_agents_at_time_t(x,sets)
+        #if len(self.L) > 1:
+        #    raise NotImplementedError('Only one dimension available so far...')
+        #coeffs = self.compute_C_t_fft(x)
+        k = list(range(self.k_max))
+        for sets in product(k, repeat = len(self.L)):
+            slices = [slice(None)] + list(sets)
+            coeffs[slices] = self.compute_fourier_coefficients_agents_at_time_t(x,sets)
         
         #loss_2 = (((coeffs - self.coeffs_density)**2) * self.norm_weights).sum()
         #loss_1 = (((coeffs - self.coeffs_density).abs()) * self.norm_weights).sum()
         #loss = lam2 * loss_2 + lam1 * loss_1
         repeated_coeffs = self.coeffs_density.unsqueeze(0).repeat(Batch_size, *[1 for _ in self.L]) ##repeat target coeffs Batch_size times
-        loss = self.criterion(coeffs, repeated_coeffs)
+        #loss = self.criterion(self.norm_weights * coeffs, self.norm_weights * repeated_coeffs)
+        loss = ((self.norm_weights * (coeffs - repeated_coeffs))**2).mean()
         if self.verbose:
-            print("model", coeffs,"target", self.coeffs_density)
+            print("model", self.norm_weights * coeffs,"target", self.norm_weights * self.coeffs_density)
             print("scaling", self.norm_weights)
         if u is not None:
             loss += (self.control_energy_reg * (u.abs() ** 2).sum()) / (2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
