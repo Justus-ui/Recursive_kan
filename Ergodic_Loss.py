@@ -87,8 +87,6 @@ class Ergodicity_Loss(nn.Module):
         print(self.coeffs_density, "target distribution")
 
         self.control_energy_reg = control_energy_reg
-        #self.criterion = torch.nn.SmoothL1Loss(beta = 1e-3)
-        self.criterion = torch.nn.MSELoss()
 
     def type_error(self):
         raise TypeError('Unknow density')
@@ -124,6 +122,17 @@ class Ergodicity_Loss(nn.Module):
         samples = rejection_sampling(self.pdf, self.in_dim, self.n_samples, self.L, max_pdf_value)
         samples = samples.squeeze()
         if len(samples.shape) == 1:
+            plt.figure(figsize=(10, 6))
+            plt.hist(samples, bins=30, density=True, alpha=0.6, color='skyblue', label='Rejection Sampling')
+
+            x_range = np.linspace(min(samples), max(samples), 1000)
+            plt.plot(x_range, self.pdf(x_range), color='red', linewidth=2, label='True PDF')
+
+            plt.xlabel('Sample Value')
+            plt.ylabel('Density')
+            plt.title('Histogram of Rejection Sampling vs. True PDF')
+            plt.legend()
+            plt.show()
             samples = samples.unsqueeze(1)
         
         if self.in_dim == 2 and self.verbose:
@@ -192,39 +201,6 @@ class Ergodicity_Loss(nn.Module):
         transform = self.fourier_basis(x,sets)
         c_k = transform.sum(dim=0).sum(dim=-1)
         return c_k / (self.N_Agents * self.n_timesteps) ##TODO add functionality to not use [0,1] as timeframe, i.e * t
-    
-    def C_t(self, x):
-        """
-            C_t in one dimension 
-            TODO VECTTORIZE
-        """
-
-        eps = 1e-6 ## TODO
-        arr = self.Curr_sample - x
-        normalized = arr / (arr.abs())
-        diff = torch.diff(normalized, dim = 0)
-        return diff.abs().sum(dim=(0,2)) / 2 
-
-    def compute_C_t_fft(self, X):
-        """
-            C_t in one dimension 
-            TODO VECTTORIZE
-            X State of Agents [Num_timesteps ,Batch_size, N_Agents, in_dim] 
-        """
-        n_samples = 1000 
-        coeff_shape = [X.shape[1]] + [self.k_max for _ in range(len(self.L))]
-        coeffs_density = torch.zeros(coeff_shape)
-        #print(coeffs_density.shape)
-        k = list(range(self.k_max))
-        for i in range(X.shape[1]):
-            self.Curr_sample = X[:,i,:,:].unsqueeze(1)
-            samples = differentiable_sampling(self.C_t, n_samples)
-            for sets in product(k, repeat = len(self.L)):
-                k_trans = torch.tensor(sets, dtype = torch.float32)
-                k_trans *= torch.pi * (self.L)**(-1)
-                coeffs_density[i,*sets] = (torch.cos(samples * k_trans).prod(dim = 1).sum() / n_samples) / self.normalization_factors[sets]
-        return coeffs_density
-
 
     def charcteristic_function_uniform(self, k):
         """ 
@@ -272,8 +248,12 @@ class Ergodicity_Loss(nn.Module):
             k = torch.tensor(sets, dtype = torch.float32)
             k *= torch.pi * (self.L)**(-1)
             self.coeffs_density[sets] = self.charcteristic_function(k).real
+            self.norm_weights[sets] = self.compute_weight_norm(k)
             self.normalization_factors[sets] = self.compute_normalization_constant(sets)
-            self.norm_weights[sets] = self.compute_weight_norm(k) * 100
+            if all(x == 0 for x in sets):
+                self.norm_weights[sets] = 0. 
+        ## Scale the \Lambda_k such that we assign different importance to coeffs, without decreasing the values to much! (important for penalty on leaving rect!)
+        self.norm_weights_scaled = (self.norm_weights - self.norm_weights.min()) / (self.norm_weights.max() - self.norm_weights.min())
         self.coeffs_density /= self.normalization_factors
 
 
@@ -296,10 +276,22 @@ class Ergodicity_Loss(nn.Module):
         #loss = lam2 * loss_2 + lam1 * loss_1
         repeated_coeffs = self.coeffs_density.unsqueeze(0).repeat(Batch_size, *[1 for _ in self.L]) ##repeat target coeffs Batch_size times
         #loss = self.criterion(self.norm_weights * coeffs, self.norm_weights * repeated_coeffs)
-        loss = ((self.norm_weights * (coeffs - repeated_coeffs))**2).mean()
+        ## Elastic net over coeffs
+        loss = ((self.norm_weights_scaled * (coeffs - repeated_coeffs)).pow(2).sum(dim = 1) / self.norm_weights_scaled.sum()).mean() ## some sort of elastic Net
+ ## some sort of elastic Net
+        #print((self.norm_weights * (coeffs - repeated_coeffs)).abs().sum(dim = 1))
+        loss += ((self.norm_weights_scaled * (coeffs - repeated_coeffs)).abs().sum(dim = 1) / self.norm_weights_scaled.sum()).mean()
+        loss /= 2
+        ## some sort of elastic Net,normalized with weighted sum
+        #print(loss, "current loss")
+        ##### Keep in mind in conjunction with the model penalty which is just the amount of overstepping we need to have this normalized in a decent range!, both errors should be kind of proportional
         if self.verbose:
-            print("model", self.norm_weights * coeffs,"target", self.norm_weights * self.coeffs_density)
-            print("scaling", self.norm_weights)
+            print("model:", coeffs[0,1],"target:", self.coeffs_density[1])
+            #print(((coeffs - repeated_coeffs)).abs().mean() / 2)
+            #print(coeffs - repeated_coeffs, "difference")
+            #print((coeffs - repeated_coeffs))
+            #print("model", self.norm_weights_scaled * coeffs,"target", self.norm_weights_scaled * self.coeffs_density)
+            #print("scaling", self.norm_weights_scaled, self.norm_weights_scaled)
         if u is not None:
             loss += (self.control_energy_reg * (u.abs() ** 2).sum()) / (2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
         return  loss## I am really unhappy with the expand here!

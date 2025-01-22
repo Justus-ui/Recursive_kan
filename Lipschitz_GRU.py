@@ -5,7 +5,7 @@ class Lipschitz_GRU(nn.Module):
     """
         Defines a GRU with enforceable LIpschitz condition
     """
-    def __init__(self, in_dim ,hidden, depth = 2, activation = nn.ReLU):
+    def __init__(self, in_dim ,hidden, dropout, depth = 2, activation = nn.ReLU):
         super(Lipschitz_GRU, self).__init__()
         self.hidden = hidden
         self.depth = depth
@@ -16,7 +16,7 @@ class Lipschitz_GRU(nn.Module):
         #self.activation = activation ##TODO when does this work and when not??
         self.activation = nn.ReLU()
         self.Norm_constraints = torch.rand(self.depth) * self.B
-        self.gru = nn.GRU(in_dim, self.hidden, num_layers = self.depth, batch_first=True, dropout = 0.3)
+        self.gru = nn.GRU(in_dim, self.hidden, num_layers = self.depth, batch_first=True, dropout = dropout)
         
     def forward(self, x):
         out, self.hidden_state = self.gru(x, self.hidden_state)

@@ -25,10 +25,23 @@ class GRU(nn.Module):
         self.activation = activation()
         self.gru = nn.GRU(in_dim * N_Agents, self.hidden, num_layers = self.depth, batch_first=True)
         self.fc1 = nn.Linear(self.hidden, in_dim * N_Agents)
-    
+        self.initialize_weights() 
+
+    def initialize_weights(self):
+        for name, param in self.named_parameters():
+            if 'weight_ih' in name:
+                torch.nn.init.xavier_uniform_(param)
+            elif 'weight' in name:  # Linear layer weights
+                torch.nn.init.xavier_uniform_(param)
+            elif 'weight_hh' in name:
+                torch.nn.init.orthogonal_(param) 
+            elif 'bias' in name:
+                torch.nn.init.zeros_(param)
+
     def init_hidden(self, batch_size):
         device = self.device_train if self.training else self.device_eval
-        self.hidden_state = torch.zeros(self.depth, batch_size, self.hidden).to(device)
+        self.hidden_state = (torch.randn(self.depth, batch_size, self.hidden) * 0.01).to(device) 
+        ## I hope randn weights  elp in faster convergence
 
     def time_step(self, x):
         out, self.hidden_state = self.gru(x, self.hidden_state)

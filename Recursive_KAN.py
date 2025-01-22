@@ -8,16 +8,17 @@ class KAN_RNN_Layer(nn.Module):
     """
         Defines KAN with univariate approximation via GRUs
     """
-    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi', thres = 0., device = None):
+    def __init__(self, N_Agents, in_dim, hidden, depth, n_timesteps, sys_param_lam = 0.1, u_max = 5, network_type = 'multi', thres = 0., device = None, dropout = 0):
         """ 
         in_dim:Dimension of Agent information, i.e cartesian coordinates R^2
         device: if true uses cuda
         """
         super(KAN_RNN_Layer, self).__init__()
         # Problem Attributes
-        
         self.N_Agents = N_Agents
         self.in_dim = in_dim
+        # Model attributes
+        self.dropout = dropout
         self.hidden = hidden
         self.depth = depth
         self.sys_param_lam = sys_param_lam
@@ -37,6 +38,7 @@ class KAN_RNN_Layer(nn.Module):
         # Constraint
         self.thres = thres
         self.L = [1. for _ in range(in_dim)] ## for projecting into bounds if Agent tries to leave rect #TODO write general
+        
         #init model
         self.init_model()
 
@@ -84,7 +86,7 @@ class KAN_RNN_Layer(nn.Module):
         for _ in range(self.N_Agents * self.in_dim):
             Networks = nn.ModuleList()
             for _ in range(self.N_Agents):
-                Networks.append(Lipschitz_GRU(in_dim = self.in_dim ,hidden = self.hidden, depth = self.depth)) ## Dimension of input x -> indim, depth number of stacked Gru Layers, hidden Numer of Neurons in the GRu Layers
+                Networks.append(Lipschitz_GRU(in_dim = self.in_dim ,hidden = self.hidden, depth = self.depth, dropout = self.dropout)) ## Dimension of input x -> indim, depth number of stacked Gru Layers, hidden Numer of Neurons in the GRu Layers
             self.Network_stack.append(Networks)
             self.linear_Network_stack.append(Lipschitz_Linear([self.N_Agents * self.hidden, 1]))
     
@@ -95,7 +97,7 @@ class KAN_RNN_Layer(nn.Module):
         for _ in range(self.N_Agents * self.in_dim):
             Networks = nn.ModuleList()
             for _ in range(self.N_Agents * self.in_dim):
-                Networks.append(Lipschitz_GRU(in_dim = 1 ,hidden = self.hidden, depth = self.depth))
+                Networks.append(Lipschitz_GRU(in_dim = 1 ,hidden = self.hidden, depth = self.depth, dropout = self.dropout))
             self.Network_stack.append(Networks)
             self.linear_Network_stack.append(Lipschitz_Linear([self.N_Agents * self.hidden * self.in_dim, 1]))
 
