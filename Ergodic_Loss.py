@@ -31,34 +31,7 @@ def rejection_sampling(pdf, in_dim, n_samples, L, max_pdf_value=1.0):
             samples.append(x_candidate)
     return torch.tensor(np.array(samples))
 
-def differentiable_sampling(pdf, n_samples, x_range = (1e-2,1 - 1e-2), max_pdf = 11):
-    # Assuming the pdf is normalized so that it integrates to 1 over the range
-    samples = []
-    gen_samples = 0
-    while gen_samples < n_samples:
-        # Sample x_candidate from the range
-        x_candidate = torch.rand(1) * (x_range[1] - x_range[0]) + x_range[0]
-        
-        # Sample y_candidate from a uniform distribution between 0 and 1
-        y_candidate = torch.rand(1) * max_pdf
-        
-        # Compute the probability of acceptance as a soft threshold
-        acceptance_probability = torch.sigmoid(pdf(x_candidate) - y_candidate)  # smooth function to decide acceptance
-        try:
-            accept = torch.bernoulli(acceptance_probability)
-        except:
-            #print(x_candidate)
-            ## sometimes pdf generates division by 0 error --> nan
-            continue
-        
-        # Only append x_candidate if accepted, but using a differentiable approximation
-        if accept.item(): 
-            sample = x_candidate * accept
-            #print(accept, x_candidate)
-            samples.append(sample)
-            gen_samples += 1
-    
-    return torch.cat(samples)
+
 
 class Ergodicity_Loss(nn.Module):
     def __init__(self, N_Agents, n_timesteps,L = None, in_dim = None, k_max = 10, control_energy_reg = 1e-3, device = torch.device('cpu'), density = 'uniform', verbose = True, **kwargs):
@@ -75,6 +48,7 @@ class Ergodicity_Loss(nn.Module):
             self.L = L
             self.in_dim = len(L)
         self.k_max = k_max
+        self.k_compare = k_max
 
         coeff_shape = [self.k_max for _ in range(len(self.L))]
         self.coeffs_density = torch.zeros(coeff_shape, device = self.device)
@@ -170,11 +144,6 @@ class Ergodicity_Loss(nn.Module):
 
         return torch.cos(self.samples * k).prod(dim = 1).sum() / self.n_samples
 
-
-
-
-
-
     def compute_weight_norm(self, k):
         """ compute Lambda_k """
         return (1 + (k**2).sum())**((-1) * ((len(self.L) + 1) / 2))
@@ -262,30 +231,34 @@ class Ergodicity_Loss(nn.Module):
         x: State of Agents [Num_timesteps ,Batch_size, N_Agents, in_dim] 
         """
         Batch_size = x.shape[1]
-        coeffs = torch.zeros(([Batch_size] + [self.k_max for _ in range(len(self.L))]), device = self.device)
+        coeffs = torch.zeros(([Batch_size] + [self.k_compare for _ in range(len(self.L))]), device = self.device)
         #if len(self.L) > 1:
         #    raise NotImplementedError('Only one dimension available so far...')
         #coeffs = self.compute_C_t_fft(x)
-        k = list(range(self.k_max))
+        k = list(range(self.k_compare))
         for sets in product(k, repeat = len(self.L)):
             slices = [slice(None)] + list(sets)
             coeffs[slices] = self.compute_fourier_coefficients_agents_at_time_t(x,sets)
+        idx = [slice(self.k_compare) for _ in range(len(self.L))]
         
         #loss_2 = (((coeffs - self.coeffs_density)**2) * self.norm_weights).sum()
         #loss_1 = (((coeffs - self.coeffs_density).abs()) * self.norm_weights).sum()
         #loss = lam2 * loss_2 + lam1 * loss_1
-        repeated_coeffs = self.coeffs_density.unsqueeze(0).repeat(Batch_size, *[1 for _ in self.L]) ##repeat target coeffs Batch_size times
+        #repeated_coeffs = self.coeffs_density[idx].unsqueeze(0).repeat(Batch_size, *[1 for _ in self.L]) ##repeat target coeffs Batch_size times
         #loss = self.criterion(self.norm_weights * coeffs, self.norm_weights * repeated_coeffs)
         ## Elastic net over coeffs
-        loss = ((self.norm_weights_scaled * (coeffs - repeated_coeffs)).pow(2).sum(dim = 1) / self.norm_weights_scaled.sum()).mean() ## some sort of elastic Net
+        #print(repeated_coeffs.shape)
+        loss = ((self.norm_weights_scaled[idx] * (coeffs - self.coeffs_density[idx])).pow(2).sum(dim = 1) / self.norm_weights_scaled[idx].sum()).mean() ## some sort of elastic Net
  ## some sort of elastic Net
         #print((self.norm_weights * (coeffs - repeated_coeffs)).abs().sum(dim = 1))
-        loss += ((self.norm_weights_scaled * (coeffs - repeated_coeffs)).abs().sum(dim = 1) / self.norm_weights_scaled.sum()).mean()
+
+        loss += ((self.norm_weights_scaled[idx] * (coeffs - self.coeffs_density[idx])).abs().sum(dim=tuple(range(1, coeffs.ndim))) / self.norm_weights_scaled[idx].sum()).mean()
         loss /= 2
         ## some sort of elastic Net,normalized with weighted sum
         #print(loss, "current loss")
         ##### Keep in mind in conjunction with the model penalty which is just the amount of overstepping we need to have this normalized in a decent range!, both errors should be kind of proportional
         if self.verbose:
+            print(coeffs.shape)
             print("model:", coeffs[0,1],"target:", self.coeffs_density[1])
             #print(((coeffs - repeated_coeffs)).abs().mean() / 2)
             #print(coeffs - repeated_coeffs, "difference")
@@ -293,7 +266,8 @@ class Ergodicity_Loss(nn.Module):
             #print("model", self.norm_weights_scaled * coeffs,"target", self.norm_weights_scaled * self.coeffs_density)
             #print("scaling", self.norm_weights_scaled, self.norm_weights_scaled)
         if u is not None:
-            loss += (self.control_energy_reg * (u.abs() ** 2).sum()) / (2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
+            #TODO
+            loss += (self.control_energy_reg * (u.abs() ** 2).mean()) / 2#(2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
         return  loss## I am really unhappy with the expand here!
 
 
@@ -315,32 +289,28 @@ if __name__ == '__main__':
     print(Loss(X))
     end_time = time.time()
     forward_time = end_time - intermed_time
-    print("forward_time:", forward_time)
 
-    regions = [
-            torch.tensor([[.0, .3]]),
-            torch.tensor([[.6, .9]])
-            ]
-    weights = [.5, .5]
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 4, device = device, density = 'mixture_uniform', regions = regions, weights = weights)
-    print("uniform via cf", Loss.coeffs_density)
-    print(Loss.coeffs_density.shape)
-    intermed_time = time.time()
-    print("init time:", intermed_time- start_time)
-    print(Loss(X))
-    end_time = time.time()
-    forward_time = end_time - intermed_time
-    print("forward_time:", forward_time)
-    #from densities import uniform_rect_regions as pdf
-    #import functools
-    #region  = np.array([[[0, 0.3], [0, 0.3]],
-    #                    [[0.6, 0.9], [0.7, 0.9]]])
-    #custom_pdf = functools.partial(pdf, regions=regions)
     def custom_pdf(x):
         return np.where(((x > 0) & (x < 0.3)) | ((x > 0.6) & (x < 0.9)), 5 / 3, 0)
-
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = 1, k_max = 12, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 100000)
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 12, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 1000)
     print("sampled same distribution",Loss.coeffs_density)
     print(Loss.normalization_factors, "normals")
+    X = torch.randn([num_timesteps,batch_size,N_Agents,in_dim], requires_grad = True, device = device)
+    print(Loss(X))
+    Loss.k_compare = 6
+    print(Loss(X))
 
+    from densities import uniform_rect_regions as pdf
+    import functools
+    region  = np.array([[[0, 0.3], [0, 0.3]],
+                        [[0.6, 0.9], [0.7, 0.9]]])
+    custom_pdf = functools.partial(pdf, regions=region)
+    in_dim = 2 
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 12, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 1000)
+    print("sampled same distribution",Loss.coeffs_density)
+    print(Loss.normalization_factors, "normals")
+    X = torch.randn([num_timesteps,batch_size,N_Agents,in_dim], requires_grad = True, device = device)
+    print(Loss(X))
+    Loss.k_compare = 6
+    print(Loss(X))
 
