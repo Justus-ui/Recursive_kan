@@ -34,6 +34,7 @@ class KAN_RNN_Layer(nn.Module):
         self.activation = nn.ReLU()
         self.num_forward_steps = n_timesteps
         self.u_max = u_max
+        self.SNR = 3 #### actual signal / Noise = 4, no DB
 
         # Constraint
         self.thres = thres
@@ -113,8 +114,9 @@ class KAN_RNN_Layer(nn.Module):
                 for j in range(self.N_Agents): ### in
                     output_list.append(self.Network_stack[i * self.in_dim + l][j](x[:,j,:].unsqueeze(1)))
                 out = self.linear_Network_stack[i * self.in_dim + l](self.activation(torch.cat(output_list, dim=1).reshape(-1, self.N_Agents * self.hidden)))
-                #outs[:,i,:] = torch.clamp(out, min = -self.u_max, max = self.u_max) ## Use this to have max energy constraint!
-                outs[:,i,l] = out.squeeze()
+                #outs[:,i,:] =  ## Use this to have max energy constraint!
+                outs[:,i,l] = torch.clamp(out.squeeze(), min = -self.u_max, max = self.u_max)
+        outs += torch.randn_like(outs)
         return outs
 
     def system_dynamics_multi(self,u, x_prev):
@@ -155,19 +157,31 @@ class KAN_RNN_Layer(nn.Module):
         When Networktype is uni
         x: Inital States [Batch_size, N_Agents, in_dim]
         """
+        distances = self.get_distances_matrix(x)
         outs = torch.zeros_like(x)
         for i in range(self.N_Agents): ## out
             for l in range(self.in_dim):
                 output_list = []
                 for j in range(self.N_Agents): ### in
                     for k in range(self.in_dim):
-                        output_list.append(self.Network_stack[i * self.in_dim + l][j * self.in_dim + k](x[:,j,k].unsqueeze(1).unsqueeze(1))) ## TODO made some changes here
+                        output_list.append(self.Network_stack[i * self.in_dim + l][j * self.in_dim + k](x[:,j,k].unsqueeze(1).unsqueeze(1))) ## TODO made some changes here #### 
                 out = self.linear_Network_stack[i * self.in_dim + l](self.activation(torch.cat(output_list, dim=1).reshape(-1, self.N_Agents * self.hidden * self.in_dim)))
                 #print(i * self.in_dim + l, self.activation(torch.cat(output_list, dim=1).reshape(-1, self.N_Agents * self.hidden * self.in_dim)), self.hidden)
             #outs[:,i,:] = torch.clamp(out, min = -self.u_max, max = self.u_max) ## Use this to have max energy constraint!
-                outs[:,i,l] = out.squeeze()
-
+                outs[:,i,l]  = torch.clamp(out.squeeze(), min = -self.u_max, max = self.u_max)
+        noise = torch.randn_like(outs)
+        scaled_noise = noise * (outs / self.SNR)
+        outs += scaled_noise
         return outs
+    
+    def get_distances_matrix(self, x):
+        ##### returns fading of chanel at curent time!
+        x_expanded = x.unsqueeze(2) - x.unsqueeze(1)
+        distances = torch.sqrt(torch.sum(x_expanded ** 2, dim=-1))
+        return (distances + 1e-1)**(-2) * torch.sqrt((torch.tensor(self.L)**2).sum())
+        mask = torch.ones_like(distances, dtype=torch.bool)
+        mask = mask.triu(diagonal=1) 
+        return distances.masked_select(mask).view(batch_size, -1)
 
     def system_dynamics_uni(self,u, x_prev, train = False):
         """

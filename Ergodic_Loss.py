@@ -267,7 +267,8 @@ class Ergodicity_Loss(nn.Module):
             #print("scaling", self.norm_weights_scaled, self.norm_weights_scaled)
         if u is not None:
             #TODO
-            loss += (self.control_energy_reg * (u.abs() ** 2).mean()) / 2#(2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
+            loss += self.control_energy_reg * 1e2 * ((u[:5,:,:,:].abs()**2).mean()) ### make sure at the beginning small steps!
+            loss += (self.control_energy_reg * (u[5:,:,:,:].abs() ** 2).mean()) / 2#(2 * self.N_Agents * self.n_timesteps * Batch_size) ### minimize control energy, w.r.t L2 norm squared 
         return  loss## I am really unhappy with the expand here!
 
 
