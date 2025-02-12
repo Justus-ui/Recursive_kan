@@ -89,9 +89,10 @@ class Ergodicity_Loss(nn.Module):
         self.k_compare = k_max
 
         coeff_shape = [self.k_max for _ in range(len(self.L))]
-        self.eps = 0.1
+        self.eps = 0.05
         #self.sigma = 0.05
-        self.sigma = max((math.sqrt(-2*math.log(self.eps))* (self.k_max -1)*2)**(-1), 0.1)
+        self.sigma = max((math.sqrt(-2*math.log(self.eps))* (self.k_max -1)*2)**(-1), 0.05)
+        #self.sigma = 0.05
         print("calulcated sigma:", self.sigma)
         self.coeffs_density = torch.ones(coeff_shape, device = self.device)
         self.density = density
@@ -181,8 +182,12 @@ class Ergodicity_Loss(nn.Module):
         #eps = self.eps
         eps = 0
         i, j = cell
+        #if not (i == 1. and j == 1.):
+        #    return torch.zeros_like(x).sum(-1)
         c = torch.tensor([1 /(self.k_max - 1) * i,  1/(self.k_max - 1) * j])
-        return (torch.max(torch.tensor(0.0), torch.exp(-((x - c)**2).sum(dim=-1) / (2 * self.sigma**2)) - eps) + eps) / (self.sigma)
+        #print(c, "grid")
+        return torch.exp(-(((x - c)**2).sum(dim=-1)) / (2 * self.sigma**2))
+        #return (torch.max(torch.tensor(0.0), torch.exp(-((x - c)**2).sum(dim=-1) / (2 * self.sigma**2)) - eps) + eps) #/ (self.sigma)
         #return (torch.max(torch.tensor(0.0), torch.exp(-((x - self.c[i,j])**2).sum(dim=-1) / (2 * self.sigma**2)) - eps) + eps) / (self.sigma)
 
     def sampled_fourier(self, k):
@@ -193,7 +198,7 @@ class Ergodicity_Loss(nn.Module):
         #i,j = k
         #mask = (self.samples[:, 0] >= i / self.k_max ) & (self.samples[:, 0] <= (i +1) / self.k_max) & (self.samples[:, 1] >= (j) / self.k_max) & (self.samples[:, 1] <= (j +1) / self.k_max)
         #return mask.to(float).sum() / self.n_samples
-        return self.varphi(self.samples, k).sum() / self.n_samples
+        return (self.varphi(self.samples, k).sum() / self.n_samples)**0.5
 
         #return torch.pow(self.samples, k).prod(dim = 1).sum() / self.n_samples
 
@@ -208,7 +213,7 @@ class Ergodicity_Loss(nn.Module):
         k torch.tensor (in_dim)
         """
         #k = torch.tensor(sets, dtype = torch.float32)
-        return self.varphi(x, sets)
+        return self.varphi(x, sets) #*(self.sigma)**0.5
         #k *= (torch.pi * (self.L)**(-1))
         #k = k.to(self.device)
         #print(x.shape, k.view(1,1,1,-1).shape)
@@ -306,11 +311,11 @@ class Ergodicity_Loss(nn.Module):
         #loss = self.criterion(self.norm_weights * coeffs, self.norm_weights * repeated_coeffs)
         ## Elastic net over coeffs
         #print(repeated_coeffs.shape)
-        loss = ((self.norm_weights_scaled[idx] * (coeffs - self.coeffs_density[idx])).pow(2).sum(dim = 1) / self.norm_weights_scaled[idx].sum()).mean() ## some sort of elastic Net
+        loss = ((self.norm_weights_scaled[idx] / self.sigma * (coeffs - self.coeffs_density[idx])).pow(2).sum(dim = 1) / self.norm_weights_scaled[idx].sum()).mean() ## some sort of elastic Net
  ## some sort of elastic Net
         #print((self.norm_weights * (coeffs - repeated_coeffs)).abs().sum(dim = 1))
 
-        loss += ((self.norm_weights_scaled[idx] * (coeffs - self.coeffs_density[idx])).abs().sum(dim=tuple(range(1, coeffs.ndim))) / self.norm_weights_scaled[idx].sum()).mean()
+        loss += ((self.norm_weights_scaled[idx] / self.sigma * (coeffs - self.coeffs_density[idx])).abs().sum(dim=tuple(range(1, coeffs.ndim))) / self.norm_weights_scaled[idx].sum()).mean()
         loss /= 2
         ## some sort of elastic Net,normalized with weighted sum
         #print(loss, "current loss")
@@ -333,8 +338,8 @@ class Ergodicity_Loss(nn.Module):
 if __name__ == '__main__':
     import time
     start_time = time.time()
-    N_Agents = 2
-    num_timesteps = 2
+    N_Agents = 1
+    num_timesteps = 10000
     batch_size = 1
     device = torch.device("cpu")
 
@@ -346,12 +351,15 @@ if __name__ == '__main__':
 ])
     custom_pdf = functools.partial(pdf, regions=region)
     in_dim = 2 
-    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 3, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 1000)
+    Loss = Ergodicity_Loss(N_Agents, num_timesteps, in_dim = in_dim, k_max = 3, device = device, density = 'custom', pdf = custom_pdf,max_pdf = 5/3, num_samples = 10000)
     print("sampled same distribution",Loss.coeffs_density)
     print(Loss.normalization_factors, "normals")
     Loss.verbose = True
-    X = torch.randn([num_timesteps,batch_size,N_Agents,in_dim], requires_grad = True, device = device)
+    X = torch.ones([num_timesteps,batch_size,N_Agents,in_dim], requires_grad = False, device = device)
+    for i in range(num_timesteps):
+        X[i,:,:,0] = i / num_timesteps
+        X[i,:,:,1] = i / num_timesteps
+    print(X)
     print(Loss(X))
-    Loss.k_compare = 3
-    print(Loss(X))
+    print(Loss.sigma)
 

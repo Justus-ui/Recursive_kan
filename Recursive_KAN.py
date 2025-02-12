@@ -116,7 +116,7 @@ class KAN_RNN_Layer(nn.Module):
                 out = self.linear_Network_stack[i * self.in_dim + l](self.activation(torch.cat(output_list, dim=1).reshape(-1, self.N_Agents * self.hidden)))
                 #outs[:,i,:] =  ## Use this to have max energy constraint!
                 outs[:,i,l] = torch.clamp(out.squeeze(), min = -self.u_max, max = self.u_max)
-        outs += torch.randn_like(outs)
+        #outs += torch.randn_like(outs)
         return outs
 
     def system_dynamics_multi(self,u, x_prev):
@@ -169,9 +169,9 @@ class KAN_RNN_Layer(nn.Module):
                 #print(i * self.in_dim + l, self.activation(torch.cat(output_list, dim=1).reshape(-1, self.N_Agents * self.hidden * self.in_dim)), self.hidden)
             #outs[:,i,:] = torch.clamp(out, min = -self.u_max, max = self.u_max) ## Use this to have max energy constraint!
                 outs[:,i,l]  = torch.clamp(out.squeeze(), min = -self.u_max, max = self.u_max)
-        noise = torch.randn_like(outs)
-        scaled_noise = noise * (outs / self.SNR)
-        outs += scaled_noise
+        #noise = torch.randn_like(outs)
+        #scaled_noise = noise * (outs / self.SNR)
+        #outs += scaled_noise
         return outs
     
     def get_distances_matrix(self, x):
