@@ -100,7 +100,7 @@ class Ergodicity_Loss(nn.Module):
         self.init_mydensity(kwargs) ## initialize parameters
         self.normalization_factors = torch.zeros(coeff_shape, device = self.device) # h_k
         self.norm_weights = torch.zeros(coeff_shape, device = self.device) # Lambda_k
-        self.compute_fourier_coefficients_density()
+        #self.compute_fourier_coefficients_density()
         #print(self.coeffs_density, "target distribution")
         self.control_energy_reg = control_energy_reg
 
@@ -198,7 +198,7 @@ class Ergodicity_Loss(nn.Module):
         #i,j = k
         #mask = (self.samples[:, 0] >= i / self.k_max ) & (self.samples[:, 0] <= (i +1) / self.k_max) & (self.samples[:, 1] >= (j) / self.k_max) & (self.samples[:, 1] <= (j +1) / self.k_max)
         #return mask.to(float).sum() / self.n_samples
-        return (self.varphi(self.samples, k).sum() / self.n_samples)**0.5
+        return self.varphi(self.samples, k).sum() / self.n_samples
 
         #return torch.pow(self.samples, k).prod(dim = 1).sum() / self.n_samples
 
@@ -292,8 +292,8 @@ class Ergodicity_Loss(nn.Module):
         """
         Batch_size = x.shape[1]
         #self.c = torch.clamp(torch.rand(self.k_max, self.k_max, self.in_dim), min = self.sigma, max = 1 - self.sigma)
-        #self.c = torch.rand(self.k_max, self.k_max, self.in_dim)
-        #self.compute_fourier_coefficients_density()
+        self.c = torch.rand(self.k_max, self.k_max, self.in_dim)
+        self.compute_fourier_coefficients_density()
         coeffs = torch.ones(([Batch_size] + [self.k_compare for _ in range(len(self.L))]), device = self.device)
         #if len(self.L) > 1:
         #    raise NotImplementedError('Only one dimension available so far...')
